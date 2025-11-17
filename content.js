@@ -1,32 +1,50 @@
-
 const SKIP_RULES = {
-    netflix: [
-        'button[aria-label="Skip Intro"]',
-        'button[aria-label="Skip Recap"]'
-    ],
-    primevideo: [
-        'button[data-testid="skip-intro-button"]',
-        'button[data-testid="skip-recap-button"]'
-    ],
-    peacock: [
-        'button.skip__button',
-        'button[data-testid="skip-intro"]'
-    ],
-    hulu: [
-        '.skip-button',
-        'button[aria-label="Skip Intro"]',
-        'button[aria-label="Skip Recap"]'
-    ],
+    netflix: {
+        intro: 'button[aria-label="Skip Intro"]',
+        recap: 'button[aria-label="Skip Recap"]'
+    },
+    primevideo: {
+        intro: 'button[data-testid="skip-intro-button"]',
+        recap: 'button[data-testid="skip-recap-button"]'
+    },
+    peacock: {
+        intro: 'button[data-testid="skip-intro"]',
+        recap: 'button.skip__button'
+    },
+    hulu: {
+        intro: 'button[aria-label="Skip Intro"], .skip-button',
+        recap: 'button[aria-label="Skip Recap"], .skip-button'
+    }
 };
 
 const hostname = window.location.hostname;
 
+let service = null;
+if (hostname.includes("netflix")) service = "netflix";
+else if (hostname.includes("primevideo") || hostname.includes("amazon")) service = "primevideo";
+else if (hostname.includes("peacock")) service = "peacock";
+else if (hostname.includes("hulu")) service = "hulu";
+
+let skipIntroEnabled = true;
+let skipRecapEnabled = true;
 let activeRules = [];
 
-if (hostname.includes("netflix")) activeRules = SKIP_RULES.netflix;
-else if (hostname.includes("primevideo") || hostname.includes("amazon")) activeRules = SKIP_RULES.primevideo;
-else if (hostname.includes("peacock")) activeRules = SKIP_RULES.peacock;
-else if (hostname.includes("hulu")) activeRules = SKIP_RULES.hulu;
+chrome.storage.sync.get(["skipIntro", "skipRecap"], (data) => {
+    // default to true if undefined
+    skipIntroEnabled = (data.skipIntro === undefined) ? true : data.skipIntro;
+    skipRecapEnabled = (data.skipRecap === undefined) ? true : data.skipRecap;
+
+    rebuildActiveRules();
+    startObserver();
+});
+
+function rebuildActiveRules() {
+    activeRules = [];
+    if (!service || !SKIP_RULES[service]) return;
+
+    if (skipIntroEnabled) activeRules.push(SKIP_RULES[service].intro);
+    if (skipRecapEnabled) activeRules.push(SKIP_RULES[service].recap);
+}
 
 let lastClickTime = 0;
 
@@ -39,52 +57,61 @@ function clickSkipIfExistsThrottled() {
 }
 
 function clickSkipIfExists() {
+    // First try selectors
     for (const selector of activeRules) {
-        const btn = document.querySelector(selector);
-        if (btn) {
-            console.log("AutoSkip: Clicked", selector);
+        const buttons = document.querySelectorAll(selector);
+        for (const btn of buttons) {
+            // For Hulu, check text to differentiate recap vs intro
+            const text = btn.textContent.trim().toLowerCase();
+            if ((skipIntroEnabled && text.includes("intro")) ||
+                (skipRecapEnabled && text.includes("recap")) ||
+                text === "skip") { // fallback for generic skip
+                console.log("AutoSkip: Clicked", selector, text);
+                btn.click();
+                return;
+            }
+        }
+    }
+
+    // Fallback: any button text contains "skip"
+    const allButtons = [...document.querySelectorAll("button")];
+    for (const btn of allButtons) {
+        const text = btn.textContent.trim().toLowerCase();
+        if ((skipIntroEnabled && text.includes("intro")) ||
+            (skipRecapEnabled && text.includes("recap")) ||
+            (skipIntroEnabled || skipRecapEnabled) && text === "skip") {
+            console.log("AutoSkip (fallback): Clicked button with text:", text);
             btn.click();
             return;
         }
     }
+}
 
-    // fallback: match by visible text
-    const textMatches = ["skip", "skip intro", "skip recap"];
-    const buttons = [...document.querySelectorAll("button")];
+function startObserver() {
+    const observer = new MutationObserver(() => {
+        clickSkipIfExistsThrottled();
+    });
 
-    for (let btn of buttons) {
-        if (textMatches.includes(btn.textContent.trim().toLowerCase())) {
-            console.log("Auto-Skip: clicked via text match");
-            btn.click();
-            return;
-        }
+    let targetNode = document.body;
+    if (service === "hulu") {
+        const player = document.querySelector('div[data-testid="video-player"]');
+        if (player) targetNode = player;
     }
+
+    observer.observe(targetNode, {
+        childList: true,
+        subtree: true
+    });
 }
 
-// MutationObserver is kind of like a listener
-// it checks for mutations/when the page updates the UI (pretty frequent)
-// allows "background listening" without constantly polling
-const observer = new MutationObserver(() => {
-    clickSkipIfExistsThrottled();
+// listen for storage changes and update activeRules dynamically
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync') {
+        if (changes.skipIntro) skipIntroEnabled = changes.skipIntro.newValue;
+        if (changes.skipRecap) skipRecapEnabled = changes.skipRecap.newValue;
+
+        rebuildActiveRules();
+
+        if (activeRules.length > 0) clickSkipIfExistsThrottled();
+    }
 });
-
-// Observe the entire document, but Hulu tends to freeze (so only observe part)
-let targetNode = document.body;
-
-if (hostname.includes("hulu")) {
-    const player = document.querySelector('div[data-testid="video-player"]');
-    if (player) targetNode = player;
-}
-
-observer.observe(targetNode, {
-    childList: true,
-    // not just direct children
-    subtree: true
-});
-
-// code to just poll for Hulu if it doesn't work:
-/* 
-if (hostname.includes("hulu")) {
-    setInterval(clickSkipIfExists, 1000); // every second
-}
-*/
