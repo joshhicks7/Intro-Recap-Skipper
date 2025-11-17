@@ -3,10 +3,7 @@
   "name": "Intro & Recap Skipper",
   "version": "1.0",
   "description": "Auto-skip the intro and recap of tv shows without having to click a button. Works on Netflix, Prime Video, Hulu, and Peacock.",
-  "permissions": ["storage"],
-  "action": {
-    "default_popup": "popup.html"
-  },
+  "permissions": [],
   "content_scripts":[
     {
       "matches": [
